@@ -26,6 +26,12 @@ pub struct ProcessAudioRequest {
     pub output_format: String,
     #[serde(default)]
     pub normalize: bool,
+    #[serde(default = "default_passes")]
+    pub passes: u8,
+}
+
+fn default_passes() -> u8 {
+    2
 }
 
 #[derive(Debug, Serialize)]

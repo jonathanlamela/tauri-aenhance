@@ -18,7 +18,6 @@ use tempfile::NamedTempFile;
 
 use crate::models::{AnalyzeAudioResponse, ProcessAudioRequest, ProcessAudioResponse};
 
-// nnnoiseless expects 48 kHz, 480-sample frames, samples in i16 scale [-32768, 32767]
 const DENOISE_SAMPLE_RATE: u32 = 48_000;
 const FRAME_SIZE: usize = DenoiseState::FRAME_SIZE;
 
@@ -67,10 +66,9 @@ where
     F: FnMut(&str, u8),
 {
     progress("decoding", 5);
-
     let decoded = decode_audio_file(Path::new(&request.input_path))?;
     let output_format = request.output_format.trim().to_lowercase();
-    let normalize = request.normalize;
+    let passes = request.passes.max(1).min(3) as usize;
 
     progress("resampling", 12);
 
@@ -84,35 +82,27 @@ where
         }
 
         let resampled = linear_resample(channel, decoded.sample_rate, DENOISE_SAMPLE_RATE);
+        progress("denoising", 15 + (index as f32 / total_channels as f32 * 65.0) as u8);
 
-        let pass_base = 15 + (index as f32 / total_channels as f32 * 65.0) as u8;
-        progress("denoising", pass_base);
-
-        let denoised = denoise_channel(&resampled, cancel, |pass, frame_pct| {
-            let channel_frac = (index as f32 + (pass as f32 + frame_pct))
-                / total_channels as f32;
-            let pct = 15 + (channel_frac * 65.0) as u8;
-            progress("denoising", pct.min(79));
+        let denoised = denoise_channel(&resampled, passes, cancel, |pass, frame_pct| {
+            let ch_frac =
+                (index as f32 + (pass as f32 + frame_pct) / passes as f32) / total_channels as f32;
+            progress("denoising", (15 + (ch_frac * 65.0) as u8).min(79));
         })?;
 
         let restored = linear_resample(&denoised, DENOISE_SAMPLE_RATE, decoded.sample_rate);
-
-        let result = match restored.len().cmp(&channel.len()) {
-            std::cmp::Ordering::Greater => restored.into_iter().take(channel.len()).collect(),
-            std::cmp::Ordering::Less => {
-                let mut padded = restored;
-                padded.resize(channel.len(), 0.0);
-                padded
-            }
-            std::cmp::Ordering::Equal => restored,
-        };
-
+        let mut result = restored;
+        match result.len().cmp(&channel.len()) {
+            std::cmp::Ordering::Greater => result.truncate(channel.len()),
+            std::cmp::Ordering::Less => result.resize(channel.len(), 0.0),
+            std::cmp::Ordering::Equal => {}
+        }
         processed_channels.push(result);
     }
 
     let mut interleaved = interleave(&processed_channels);
 
-    if normalize {
+    if request.normalize {
         progress("boosting", 81);
         peak_normalize(&mut interleaved, -1.0);
     }
@@ -157,6 +147,7 @@ where
 
 fn denoise_channel<P>(
     input: &[f32],
+    passes: usize,
     cancel: &AtomicBool,
     mut on_progress: P,
 ) -> Result<Vec<f32>>
@@ -164,14 +155,12 @@ where
     P: FnMut(usize, f32),
 {
     let mut current = input.to_vec();
-    let total_frames = (input.len() + FRAME_SIZE - 1) / FRAME_SIZE;
-
-    for pass in 0..1usize {
+    for pass in 0..passes {
+        let total_frames = (current.len() + FRAME_SIZE - 1) / FRAME_SIZE;
         let mut state = DenoiseState::new();
         let mut output = vec![0.0f32; current.len()];
         let mut in_buf = [0.0f32; FRAME_SIZE];
         let mut out_buf = [0.0f32; FRAME_SIZE];
-
         let mut pos = 0;
         let mut frame_idx = 0usize;
 
@@ -188,15 +177,11 @@ where
             }
             pos += FRAME_SIZE;
             frame_idx += 1;
-
-            // Emit progress every 64 frames to avoid flooding events
             if frame_idx % 64 == 0 {
-                let frame_pct = frame_idx as f32 / total_frames.max(1) as f32;
-                on_progress(pass, frame_pct);
+                on_progress(pass, frame_idx as f32 / total_frames.max(1) as f32);
             }
         }
 
-        // Handle remaining samples (< FRAME_SIZE) via zero-padded frame
         if pos < current.len() {
             in_buf = [0.0f32; FRAME_SIZE];
             out_buf = [0.0f32; FRAME_SIZE];
@@ -212,7 +197,6 @@ where
         on_progress(pass, 1.0);
         current = output;
     }
-
     Ok(current)
 }
 
@@ -597,24 +581,31 @@ mod tests {
         assert!(samples[0] >= 30000, "expected boosted sample, got {}", samples[0]);
     }
 
-    // ── denoise_channel: smoke test (no cancel, short silent input) ──────────
+    // ── denoise_channel: smoke tests ─────────────────────────────────────────
 
     #[test]
     fn denoise_channel_processes_silent_input() {
         let cancel = AtomicBool::new(false);
         let input = vec![0.0f32; FRAME_SIZE * 3];
-        let output = denoise_channel(&input, &cancel, |_, _| {}).unwrap();
+        let output = denoise_channel(&input, 1, &cancel, |_, _| {}).unwrap();
         assert_eq!(output.len(), input.len());
-        // Silent input should produce near-silent output
         let max = output.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
         assert!(max < 0.05, "unexpected loud output for silent input: {max}");
+    }
+
+    #[test]
+    fn denoise_channel_two_passes() {
+        let cancel = AtomicBool::new(false);
+        let input = vec![0.0f32; FRAME_SIZE * 5];
+        let out = denoise_channel(&input, 2, &cancel, |_, _| {}).unwrap();
+        assert_eq!(out.len(), input.len());
     }
 
     #[test]
     fn denoise_channel_cancels_immediately() {
         let cancel = AtomicBool::new(true);
         let input = vec![0.0f32; FRAME_SIZE * 10];
-        let result = denoise_channel(&input, &cancel, |_, _| {});
+        let result = denoise_channel(&input, 1, &cancel, |_, _| {});
         assert!(result.is_err());
     }
 }

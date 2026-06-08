@@ -1,0 +1,2 @@
+[env]
+ORT_DYLIB_PATH = "/Users/jonathanlamela/Desktop/personal-projects/tauri-aenhance/src-tauri/libs/libonnxruntime.dylib"
