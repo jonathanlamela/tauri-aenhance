@@ -1,0 +1,45 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color: #0f172a;
+  background: #eaf1ff;
+  font-family: "Avenir Next", Avenir, "Segoe UI", sans-serif;
+}
+
+body {
+  color: #0f172a;
+}
+
+.app-shell {
+  min-height: 100dvh;
+  background:
+    radial-gradient(
+      circle at top right,
+      rgba(56, 189, 248, 0.16),
+      transparent 35%
+    ),
+    radial-gradient(
+      circle at top left,
+      rgba(99, 102, 241, 0.13),
+      transparent 38%
+    ),
+    #eaf1ff;
+}
+
+.glass-card {
+  background: rgba(250, 252, 255, 0.92);
+}
+
+.section-label {
+  font-size: 0.7rem;
+  line-height: 1rem;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  color: rgb(51 65 85 / 0.55);
+}
+
+.wave-shell ::part(region) {
+  border-radius: 9999px;
+}
